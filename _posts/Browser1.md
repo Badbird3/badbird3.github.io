@@ -1,0 +1,190 @@
+---
+layout: post
+title: Tommy's Browser Hacking Experience Part 1
+---
+
+![](C:\Tools\BrowserExploitStudy2.0\writeup\chrome_rocks.png)
+
+## Why Chrome?
+
+As of November 2021, 64.01% of web users used Google Chrome according to [Statcounter](https://gs.statcounter.com/browser-market-share).
+
+Additionally, Google chrome RCE or SBX exploits go for $400,000 at a minimum on [Zerodium](https://zerodium.com/temporary.html) as of 12/14/2021 
+
+Because of the huge, my interest in exploiting Chrome is huge. 
+
+## Getting Started
+
+While googling around I discovered that Amy Burnett from Ret2 systems offers a browser exploitation course. I tried to contact Ret2 about training via email, phone and twitter DM but my inquiries were [ignored](https://twitter.com/b4db1rd/status/1450543981624889349).
+
+Because of this, I decided to use their syllabus as a study guide [outline](githublink).
+
+## Setting Up for Testing
+
+I chose to use Ubuntu hosted in VMware. While you can host chrome in many different OS’s, Ubuntu is very easy to use and thus is preferred. 
+
+V8 is a JavaScript engine used by Chrome. Is seem that the majority of high impact Chrome bugs affect V8. D8 is a CLI enabled JavaScript engine that functions very similar to the Chrome dev tools console.  There are many ways to get d8 running on chrome, you can download precompiled version of chrome or build from source. You could also just run entire chrome. 
+
+I chose to download and install d8 from source, you can use these steps to install d8 on Ubuntu:
+
+
+First, install the required tools for building d8:
+```
+badbird@ubuntu:~/tools$ git clone https://chromium.googlesource.com/chromium/tools/depot_tools.git
+badbird@ubuntu:~/tools$ echo "export PATH=/home/badbird/tools/depot_tools:$PATH" >> ~/.bashrc
+```
+
+Next, use the following commands to install d8:
+```
+badbird@ubuntu:~$ fetch v8
+badbird@ubuntu:~$ cd v8
+badbird@ubuntu:~/v8$ ./build/install-build-deps.sh # Assumes you're using apt
+```
+
+Checkout whichever version of chrome you want to mess with.
+```
+badbird@ubuntu:~/v8$ git checkout <hash>
+```
+
+Run the following commands to build d8:
+```
+badbird@ubuntu:~/v8$ gclient sync
+badbird@ubuntu:~/v8$ ./tools/dev/v8gen.py x64.release
+badbird@ubuntu:~/v8$ ninja -C ./out.gn/x64.release # Release version
+badbird@ubuntu:~/v8$ ./tools/dev/v8gen.py x64.debug
+badbird@ubuntu:~/v8$ ninja -C ./out.gn/x64.debug # Debug version
+```
+
+Once the build is complete you will have a debug and release version of d8 that can be used for further research. 
+
+Credit:
+https://faraz.faith/2019-12-13-starctf-oob-v8-indepth/
+
+## Using d8s Debugging Tools Alongside GEF
+
+The debug version of d8 has several useful debugging features that can be used to examine memory. 
+For a complete list, check out the following [link](https://chromium.googlesource.com/external/v8/+/95fef17346bb1ca4e29e5d28115046f52d78af51/src/runtime/runtime.h). 
+
+GEF is a light weight command line debugger that can used alongside d8s debugging tools to examine memory more efficiently.
+
+To use these tools together, first great began debugging d8 with GEF.
+```
+badbird@ubuntu:~/v8/out.gn/x64.debug$ gdb d8
+GNU gdb (Ubuntu 8.1.1-0ubuntu1) 8.1.1
+gef➤
+```
+
+Now, create a new file in the same directory as d8 and name it something like `test.js`, copy the following code into it:
+```
+var obj = {"A":1.1};
+var obj_arr = [obj];
+console.log(obj);
+%DebugPrint(obj);
+%SystemBreak();
+%DebugPrint(obj_arr);
+%SystemBreak();
+```
+
+The functions %DebugPrint and %SystemBreak are d8s debugging tools. In order to use them, you must use the `--allow_natives_syntax` flag. For example:
+```
+badbird@ubuntu:~/v8/out.gn/x64.debug$ gdb d8 
+gef➤  r --allow_natives_syntax testgdb.js 
+Starting program: /home/badbird/Desktop/ChromeExploiter/v8/out.gn/x64.debug/d8 --allow_natives_syntax testgdb.js
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/x86_64-linux-gnu/libthread_db.so.1".
+[New Thread 0x7ffff1af1700 (LWP 125145)]
+[New Thread 0x7ffff12f0700 (LWP 125146)]
+[New Thread 0x7ffff0aef700 (LWP 125147)]
+[object Object]
+DebugPrint: 0xd12081099a9: [JS_OBJECT_TYPE]
+ - map: 0x0d12082c7aa1 <Map(HOLEY_ELEMENTS)> [FastProperties]
+ - prototype: 0x0d12082841f5 <Object map = 0xd12082c21b9>
+ - elements: 0x0d120800222d <FixedArray[0]> [HOLEY_ELEMENTS]
+ - properties: 0x0d120800222d <FixedArray[0]>
+ - All own properties (excluding elements): {
+    0xd1208293245: [String] in OldSpace: #A: 0x0d12081099d5 <HeapNumber 1.1> (const data field 0), location: in-object
+ }
+0xd12082c7aa1: [Map]
+ - type: JS_OBJECT_TYPE
+ - instance size: 16
+ - inobject properties: 1
+ - elements kind: HOLEY_ELEMENTS
+ - unused property fields: 0
+ - enum length: invalid
+ - stable_map
+ - back pointer: 0x0d12082c7a79 <Map(HOLEY_ELEMENTS)>
+```
+
+As you can see, the `%DebugPrint` function prints out the memory address of our `obj` object. This included information about the object's properties, elements, and map.
+
+In addition, GEF dumps useful information such as contents of registers, stack and code. 
+
+```
+[ Legend: Modified register | Code | Heap | Stack | String ]
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── registers ────
+$rax   : 0x0               
+$rbx   : 0x00007ffff6dc6bb0  →  <v8::internal::Runtime_SystemBreak(int,+0> push rbp
+$rcx   : 0x5               
+$rdx   : 0x00007ffff4ca15ad  →  "0 == args.length()"
+$rsp   : 0x00007fffffffb8b0  →  0x00007fffffffb920  →  0x00007fffffffb990  →  0x00007fffffffb9b8  →  0x00007fffffffb9f8  →  0x00007fffffffba50  →  0x00007fffffffba78  →  0x00007fffffffbae0
+$rbp   : 0x00007fffffffb8b0  →  0x00007fffffffb920  →  0x00007fffffffb990  →  0x00007fffffffb9b8  →  0x00007fffffffb9f8  →  0x00007fffffffba50  →  0x00007fffffffba78  →  0x00007fffffffbae0
+$rsi   : 0x0               
+$rdi   : 0x0               
+$rip   : 0x00007ffff7fe72d5  →  <v8::base::OS::DebugBreak()+5> pop rbp
+$r8    : 0x00007fffffffba50  →  0x00007fffffffba78  →  0x00007fffffffbae0  →  0x00007fffffffbb20  →  0x00007fffffffbef0  →  0x00007fffffffbfb0  →  0x00007fffffffc1d0  →  0x00007fffffffd1f0
+$r9    : 0x61              
+$r10   : 0xe               
+$r11   : 0x00007ffff7fe72d0  →  <v8::base::OS::DebugBreak()+0> push rbp
+$r12   : 0x0               
+$r13   : 0x00005555556b1220  →  0x00000d1200000000  →  0xf200000080ec8148
+$r14   : 0x00000d1200000000  →  0xf200000080ec8148
+$r15   : 0x00007fffffffba20  →  0x00000d12080023b5  →  0x0000000000080023 ("#"?)
+$eflags: [zero carry PARITY adjust sign trap INTERRUPT direction overflow resume virtualx86 identification]
+$cs: 0x0033 $ss: 0x002b $ds: 0x0000 $es: 0x0000 $fs: 0x0000 $gs: 0x0000 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────── stack ────
+0x00007fffffffb8b0│+0x0000: 0x00007fffffffb920  →  0x00007fffffffb990  →  0x00007fffffffb9b8  →  0x00007fffffffb9f8  →  0x00007fffffffba50  →  0x00007fffffffba78  →  0x00007fffffffbae0    ← $rsp, $rbp
+0x00007fffffffb8b8│+0x0008: 0x00007ffff6dc6fbd  →  <v8::internal::__RT_impl_Runtime_SystemBreak(v8::internal::Arguments<(v8::internal::ArgumentsType)0>,+0> mov rsi, QWORD PTR [rbp-0x20]
+0x00007fffffffb8c0│+0x0010: 0x01000d1200000000
+0x00007fffffffb8c8│+0x0018: 0x00007ffff4c5ede2  →  "length_ >= 0"
+0x00007fffffffb8d0│+0x0020: 0x00000000f7dbab10
+0x00007fffffffb8d8│+0x0028: 0x0000000000000000
+0x00007fffffffb8e0│+0x0030: 0x0000000000000000
+0x00007fffffffb8e8│+0x0038: 0x00005555556b1220  →  0x00000d1200000000  →  0xf200000080ec8148
+────────────────────────────────────────────────────────────────────────────────────────────────────────── code:x86:64 ────
+   0x7ffff7fe72d0 <v8::base::OS::DebugBreak()+0> push   rbp
+   0x7ffff7fe72d1 <v8::base::OS::DebugBreak()+1> mov    rbp, rsp
+   0x7ffff7fe72d4 <v8::base::OS::DebugBreak()+4> int3   
+ → 0x7ffff7fe72d5 <v8::base::OS::DebugBreak()+5> pop    rbp
+   0x7ffff7fe72d6 <v8::base::OS::DebugBreak()+6> ret    
+   0x7ffff7fe72d7                  nop    WORD PTR [rax+rax*1+0x0]
+   0x7ffff7fe72e0 <v8::base::OS::MemoryMappedFile::open(char+0> push   rbp
+   0x7ffff7fe72e1 <v8::base::OS::MemoryMappedFile::open(char+0> mov    rbp, rsp
+   0x7ffff7fe72e4 <v8::base::OS::MemoryMappedFile::open(char+0> sub    rsp, 0x100
+────────────────────────────────────────────────────────────────────────────────────────────────────────────── threads ────
+[#0] Id 1, Name: "d8", stopped 0x7ffff7fe72d5 in v8::base::OS::DebugBreak() (), reason: SIGTRAP
+[#1] Id 2, Name: "V8 DefaultWorke", stopped 0x7ffff342cad3 in futex_wait_cancelable (), reason: SIGTRAP
+[#2] Id 3, Name: "V8 DefaultWorke", stopped 0x7ffff342cad3 in futex_wait_cancelable (), reason: SIGTRAP
+[#3] Id 4, Name: "V8 DefaultWorke", stopped 0x7ffff342cad3 in futex_wait_cancelable (), reason: SIGTRAP
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────── trace ────
+[#0] 0x7ffff7fe72d5 → v8::base::OS::DebugBreak()()
+[#1] 0x7ffff6dc6fbd → v8::internal::__RT_impl_Runtime_SystemBreak(v8::internal::Arguments<(v8::internal::ArgumentsType)0>, v8::internal::Isolate*)()
+[#2] 0x7ffff6dc6cd0 → v8::internal::Runtime_SystemBreak(int, unsigned long*, v8::internal::Isolate*)()
+[#3] 0xd12003b44ba → cmp eax, DWORD PTR [r13+0x250]
+[#4] 0x7fffffffb9c8 → cmp al, BYTE PTR [rax]
+[#5] 0x7fffffffb9a0 → enter 0xffb9, 0xff
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+v8::base::OS::DebugBreak() () at ../../src/base/platform/platform-posix.cc:567
+567     ../../src/base/platform/platform-posix.cc: No such file or directory.
+```
+
+This is all very useful, in order to get a better understanding of how to discover bugs. It is recommended to debug previous v8 vulnerabilities as found [here](https://github.com/tunz/js-vuln-db). To do so, checkout and compile previous vulnerable versions of v8 using the steps above. 
+
+## Fuzzing
+It seems that the majority of new v8 bugs are found via fuzzing. After Googling around, I found some very interesting videos by @Pat_Ventuzelo. Specifically, [this](https://fuzzinglabs.com/fuzzing-javascript-wasm-dharma-chrome-v8/) course on fuzzing was very useful. 
+
+In this course, Ventuzelo uses Dharma and Domato to create test case js files to fuzz Chrome DOM engine. 
+
+After following along with this course, I created my own fuzzer using Python [here](link to github)
+
+## Next steps
+- Learning to efficiently fuzz is going to be my focus from here on out.
